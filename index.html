@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智慧科室 Web3D 数字孪生管理平台</title>
+    
+    <!-- 引入 Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- 引入 Tween.js 用于相机动画 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+    <!-- 引入 Tailwind CSS (辅助布局) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+
+    <!-- Three.js Import Map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000510; font-family: 'Segoe UI', sans-serif; color: white; }
+        
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        #app { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; }
+
+        /* --- 赛博朋克 UI 风格 --- */
+        .glass-panel {
+            background: rgba(0, 15, 30, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 242, 254, 0.3);
+            box-shadow: 0 0 20px rgba(0, 242, 254, 0.1);
+            pointer-events: auto;
+            transition: all 0.3s ease;
+        }
+
+        .neon-text {
+            color: #00f2fe;
+            text-shadow: 0 0 8px rgba(0, 242, 254, 0.6);
+        }
+
+        .header-bg {
+            background: linear-gradient(to bottom, rgba(0,10,30,0.95), transparent);
+            border-bottom: 1px solid rgba(0, 242, 254, 0.2);
+        }
+
+        /* 3D 标签样式 (CSS2D) */
+        .room-label {
+            font-size: 10px;
+            color: #ffffff;
+            background: rgba(0, 20, 40, 0.6);
+            border: 1px solid #00f2fe;
+            padding: 2px 6px;
+            border-radius: 2px;
+            pointer-events: none;
+            text-shadow: 0 0 2px black;
+            opacity: 0.9;
+            white-space: nowrap;
+        }
+        
+        /* 状态点动画 */
+        .status-dot {
+            width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+            box-shadow: 0 0 5px currentColor;
+        }
+        .pulse { animation: pulse-anim 2s infinite; }
+        @keyframes pulse-anim {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        /* 自定义滚动条 */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: #000; }
+        ::-webkit-scrollbar-thumb { background: #00f2fe; border-radius: 2px; }
+
+        /* Loader */
+        #loader {
+            position: fixed; inset: 0; background: #000510; z-index: 999;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            transition: opacity 0.8s;
+        }
+        .loader-ring {
+            width: 60px; height: 60px; border: 4px solid rgba(0, 242, 254, 0.2);
+            border-top-color: #00f2fe; border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loader">
+        <div class="loader-ring"></div>
+        <div class="mt-4 text-cyan-300 tracking-widest text-sm">BUILDING FLOOR PLAN...</div>
+    </div>
+
+    <!-- 3D Scene -->
+    <div id="canvas-container"></div>
+
+    <!-- Vue UI Interface -->
+    <div id="app" class="flex flex-col justify-between p-4 box-border">
+        
+        <!-- Header -->
+        <header class="header-bg absolute top-0 left-0 w-full p-4 pointer-events-auto flex justify-between items-center z-50">
+            <div class="flex items-center gap-4">
+                <i class="fa-solid fa-hospital text-3xl neon-text"></i>
+                <div>
+                    <h1 class="text-2xl font-light tracking-widest text-white uppercase">Floor 2 <span class="neon-text font-bold">Digital Twin</span></h1>
+                    <p class="text-xs text-gray-400 tracking-wider">住院部二层 · 标准护理单元</p>
+                </div>
+            </div>
+            <div class="flex gap-8 text-right font-mono">
+                <div>
+                    <div class="text-xs text-gray-500">SYSTEM TIME</div>
+                    <div class="text-lg neon-text">{{ currentTime }}</div>
+                </div>
+                <div>
+                    <div class="text-xs text-gray-500">OCCUPANCY</div>
+                    <div class="text-lg text-green-400">76%</div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content Wrapper -->
+        <div class="flex-1 flex justify-between items-stretch mt-20 mb-10 gap-4 relative">
+            
+            <!-- Left Panel: Department Overview -->
+            <aside class="w-80 glass-panel rounded-lg p-5 flex flex-col gap-6 transform transition-transform duration-500" 
+                   :class="{'translate-x-0': true, '-translate-x-full': false}"> 
+                
+                <div>
+                    <h2 class="text-lg border-l-4 border-cyan-400 pl-3 mb-4 text-gray-100 font-bold">区域概览</h2>
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-gray-900/50 p-3 rounded border border-gray-700">
+                            <div class="text-xs text-gray-400">北翼房间</div>
+                            <div class="text-xl font-mono text-white">M120-129</div>
+                        </div>
+                        <div class="bg-gray-900/50 p-3 rounded border border-gray-700">
+                            <div class="text-xs text-gray-400">南翼房间</div>
+                            <div class="text-xl font-mono text-white">M220-229</div>
+                        </div>
+                        <div class="bg-gray-900/50 p-3 rounded border border-gray-700">
+                            <div class="text-xs text-gray-400">需关注</div>
+                            <div class="text-xl font-mono text-red-500 pulse">3</div>
+                        </div>
+                        <div class="bg-gray-900/50 p-3 rounded border border-gray-700">
+                            <div class="text-xs text-gray-400">空调负荷</div>
+                            <div class="text-xl font-mono text-yellow-400">Low</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <h2 class="text-sm text-cyan-300 mb-2 uppercase tracking-wide flex justify-between">
+                        <span>房间列表</span>
+                        <span class="text-xs opacity-50">按区域排序</span>
+                    </h2>
+                    <div class="flex-1 overflow-y-auto pr-1 space-y-2">
+                        <div v-for="room in rooms" :key="room.id" 
+                             @click="selectRoom(room)"
+                             class="p-2 text-xs border-l-2 cursor-pointer transition hover:bg-cyan-900/30 flex justify-between items-center"
+                             :class="[
+                                currentRoom?.id === room.id ? 'bg-cyan-900/50 border-cyan-400' : 'border-transparent bg-gray-800/30',
+                                room.type === 'Utility' ? 'opacity-60' : ''
+                             ]">
+                            <span class="font-mono">{{ room.name }}</span>
+                            <div class="flex items-center gap-2">
+                                <span class="text-gray-400">{{ room.type }}</span>
+                                <span v-if="room.type !== 'Utility'" class="status-dot" :class="room.status === 'occupied' ? 'bg-red-500' : (room.status === 'vacant' ? 'bg-green-500' : 'bg-yellow-500')"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Right Panel: Room Control -->
+            <aside class="w-80 glass-panel rounded-lg p-5 flex flex-col gap-4 absolute right-0 top-0 bottom-0 transform transition-all duration-500"
+                   :class="currentRoom ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0 pointer-events-none'">
+                
+                <div v-if="currentRoom">
+                    <div class="flex justify-between items-start mb-4 border-b border-gray-700 pb-2">
+                        <div>
+                            <h2 class="text-2xl font-bold text-white font-mono">{{ currentRoom.name }}</h2>
+                            <p class="text-xs text-cyan-400 mt-1">{{ getRoomTypeLabel(currentRoom.type) }}</p>
+                        </div>
+                        <button @click="closeRoomPanel" class="text-gray-400 hover:text-white"><i class="fa-solid fa-times text-xl"></i></button>
+                    </div>
+
+                    <div v-if="currentRoom.type !== 'Utility'">
+                        <!-- Environment Metrics -->
+                        <div class="space-y-4 mb-6">
+                            <h3 class="text-xs text-gray-500 uppercase font-bold">实时环境监测</h3>
+                            <div class="flex justify-between items-center bg-black/30 p-3 rounded border border-gray-800">
+                                <div class="flex items-center gap-3">
+                                    <i class="fa-solid fa-temperature-half text-orange-400 w-5"></i>
+                                    <span class="text-sm text-gray-300">室内温度</span>
+                                </div>
+                                <span class="font-mono text-xl">{{ currentRoom.temp }}°C</span>
+                            </div>
+                            <div class="flex justify-between items-center bg-black/30 p-3 rounded border border-gray-800">
+                                <div class="flex items-center gap-3">
+                                    <i class="fa-solid fa-droplet text-blue-400 w-5"></i>
+                                    <span class="text-sm text-gray-300">空气湿度</span>
+                                </div>
+                                <span class="font-mono text-xl">{{ currentRoom.humidity }}%</span>
+                            </div>
+                        </div>
+
+                        <!-- Smart Controls -->
+                        <div class="space-y-3">
+                            <h3 class="text-xs text-gray-500 uppercase font-bold">IoT 设备控制</h3>
+                            
+                            <div class="flex items-center justify-between p-3 rounded bg-white/5 border border-white/10 hover:border-cyan-500/50 transition">
+                                <span class="text-sm"><i class="fa-regular fa-lightbulb mr-2"></i> 智能照明</span>
+                                <button @click="toggleDevice('light')" 
+                                        class="w-12 h-6 rounded-full relative transition-colors duration-300"
+                                        :class="currentRoom.devices.light ? 'bg-cyan-500' : 'bg-gray-700'">
+                                    <div class="w-4 h-4 bg-white rounded-full absolute top-1 transition-all duration-300"
+                                         :style="{ left: currentRoom.devices.light ? 'calc(100% - 1.25rem)' : '0.25rem' }"></div>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div v-else>
+                         <div class="p-4 bg-yellow-900/20 border border-yellow-600/30 rounded text-center">
+                            <i class="fa-solid fa-triangle-exclamation text-3xl text-yellow-500 mb-2"></i>
+                            <p class="text-yellow-200 text-sm">此区域为公共设施/功能区<br>仅限管理员操作</p>
+                         </div>
+                    </div>
+
+                    <div class="mt-auto pt-4 text-center">
+                        <button @click="resetView" class="text-xs text-cyan-500 hover:text-cyan-300 underline">返回全览视角</button>
+                    </div>
+                </div>
+            </aside>
+        </div>
+
+        <!-- Footer / Controls -->
+        <footer class="pointer-events-auto flex justify-center gap-4 mb-4 z-50">
+            <button @click="resetView" class="bg-gray-900/80 border border-cyan-500/30 text-cyan-400 px-6 py-2 rounded-full hover:bg-cyan-900/50 hover:shadow-[0_0_15px_rgba(0,242,254,0.3)] transition">
+                <i class="fa-solid fa-map mr-2"></i> 楼层全览
+            </button>
+            <button @click="toggleRotation" class="bg-gray-900/80 border border-cyan-500/30 text-cyan-400 px-6 py-2 rounded-full hover:bg-cyan-900/50 transition">
+                <i class="fa-solid fa-sync mr-2"></i> {{ autoRotate ? '停止旋转' : '自动旋转' }}
+            </button>
+        </footer>
+
+    </div>
+
+    <!-- Application Logic -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+        const { createApp, ref, onMounted } = Vue;
+
+        // --- Data Generation Based on Floor Plan Image ---
+        const generateRooms = () => {
+            const rooms = [];
+            const roomWidth = 9;
+            const roomDepth = 14;
+            const startX = -60;
+            const gap = 1;
+            
+            // Top Row (M120 - M129)
+            // Layout: M120, M121, M122, (Gap/Stairs), M123, M124, M125, M126, M127, M128, (Gap), M129
+            const topConfig = [
+                { id: 'M120', type: 'Ward' }, { id: 'M121', type: 'Ward' }, { id: 'M122', type: 'Ward' },
+                { id: 'LIFT-N', type: 'Utility', label: 'LIFT', width: 6 }, // Lift Area
+                { id: 'M123', type: 'Ward' }, { id: 'M124', type: 'Ward' }, { id: 'M125', type: 'Ward' },
+                { id: 'M126', type: 'Ward' }, { id: 'M127', type: 'Ward' }, { id: 'M128', type: 'Ward' },
+                { id: 'UTIL-N', type: 'Utility', label: 'WC', width: 6 },
+                { id: 'M129', type: 'Suite', width: 12 } // End suite
+            ];
+
+            let currentX = startX;
+            topConfig.forEach(cfg => {
+                const w = cfg.width || roomWidth;
+                rooms.push({
+                    id: cfg.id,
+                    name: cfg.label || cfg.id,
+                    type: cfg.type,
+                    x: currentX + w/2,
+                    z: -10, // Top side Z
+                    w: w,
+                    d: roomDepth,
+                    status: cfg.type === 'Utility' ? 'active' : (Math.random() > 0.4 ? 'occupied' : 'vacant'),
+                    temp: (22 + Math.random() * 3).toFixed(1),
+                    humidity: Math.floor(40 + Math.random() * 20),
+                    devices: { light: Math.random() > 0.5, ac: true, door: false }
+                });
+                currentX += w + gap;
+            });
+
+            // Bottom Row (M220 - M229)
+            // Similar layout mirrored
+            currentX = startX;
+            const bottomConfig = [
+                { id: 'M220', type: 'Ward' }, { id: 'M221', type: 'Ward' }, { id: 'M222', type: 'Ward' },
+                { id: 'STAIR-S', type: 'Utility', label: 'STAIR', width: 6 }, // Stair Area
+                { id: 'M223', type: 'Ward' }, { id: 'M224', type: 'Ward' }, { id: 'M225', type: 'Ward' },
+                { id: 'M226', type: 'Ward' }, { id: 'M227', type: 'Ward' }, { id: 'M228', type: 'Ward' },
+                { id: 'UTIL-S', type: 'Utility', label: 'WC', width: 6 },
+                { id: 'M229', type: 'Suite', width: 12 }
+            ];
+
+            bottomConfig.forEach(cfg => {
+                const w = cfg.width || roomWidth;
+                rooms.push({
+                    id: cfg.id,
+                    name: cfg.label || cfg.id,
+                    type: cfg.type,
+                    x: currentX + w/2,
+                    z: 10, // Bottom side Z
+                    w: w,
+                    d: roomDepth,
+                    status: cfg.type === 'Utility' ? 'active' : (Math.random() > 0.3 ? 'occupied' : 'vacant'),
+                    temp: (22 + Math.random() * 3).toFixed(1),
+                    humidity: Math.floor(40 + Math.random() * 20),
+                    devices: { light: Math.random() > 0.5, ac: true, door: false }
+                });
+                currentX += w + gap;
+            });
+
+            return rooms;
+        };
+
+        createApp({
+            setup() {
+                const currentTime = ref('');
+                const rooms = ref(generateRooms());
+                const currentRoom = ref(null);
+                const autoRotate = ref(false);
+
+                // Three.js refs
+                let scene, camera, renderer, composer, labelRenderer, controls;
+                let raycaster, mouse;
+                let interactiveObjects = [];
+                let scanBeam;
+
+                // Timer
+                setInterval(() => {
+                    currentTime.value = new Date().toLocaleTimeString('zh-CN');
+                }, 1000);
+
+                const getRoomTypeLabel = (type) => {
+                    const map = {
+                        'Ward': '标准病房',
+                        'Suite': 'VIP 套房',
+                        'Utility': '公共设施',
+                        'ICU': '重症监护'
+                    };
+                    return map[type] || type;
+                };
+
+                const initThree = () => {
+                    const container = document.getElementById('canvas-container');
+
+                    // Scene
+                    scene = new THREE.Scene();
+                    scene.background = new THREE.Color(0x000510);
+                    scene.fog = new THREE.FogExp2(0x000510, 0.015);
+
+                    // Camera (Adjusted for top-down corridor view)
+                    camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 1, 1000);
+                    camera.position.set(0, 90, 80);
+
+                    // Renderer
+                    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                    renderer.setPixelRatio(window.devicePixelRatio);
+                    renderer.toneMapping = THREE.ReinhardToneMapping;
+                    renderer.shadowMap.enabled = true;
+                    container.appendChild(renderer.domElement);
+
+                    // Bloom
+                    const renderScene = new RenderPass(scene, camera);
+                    const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+                    bloomPass.threshold = 0.2;
+                    bloomPass.strength = 0.6;
+                    bloomPass.radius = 0.4;
+
+                    composer = new EffectComposer(renderer);
+                    composer.addPass(renderScene);
+                    composer.addPass(bloomPass);
+                    composer.addPass(new OutputPass());
+
+                    // CSS2D
+                    labelRenderer = new CSS2DRenderer();
+                    labelRenderer.setSize(window.innerWidth, window.innerHeight);
+                    labelRenderer.domElement.style.position = 'absolute';
+                    labelRenderer.domElement.style.top = '0px';
+                    labelRenderer.domElement.style.pointerEvents = 'none';
+                    container.appendChild(labelRenderer.domElement);
+
+                    // Controls
+                    controls = new OrbitControls(camera, renderer.domElement);
+                    controls.enableDamping = true;
+                    controls.dampingFactor = 0.05;
+                    controls.maxPolarAngle = Math.PI / 2 - 0.1;
+                    controls.minDistance = 20;
+                    controls.maxDistance = 200;
+                    controls.autoRotate = autoRotate.value;
+                    controls.autoRotateSpeed = 0.5;
+
+                    // Lights
+                    const ambientLight = new THREE.AmbientLight(0x404040, 2);
+                    scene.add(ambientLight);
+                    
+                    const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+                    dirLight.position.set(-50, 100, 50);
+                    dirLight.castShadow = true;
+                    dirLight.shadow.mapSize.width = 2048;
+                    dirLight.shadow.mapSize.height = 2048;
+                    scene.add(dirLight);
+
+                    const blueLight = new THREE.PointLight(0x00f2fe, 2, 100);
+                    blueLight.position.set(0, 30, 0);
+                    scene.add(blueLight);
+
+                    // Build Scene
+                    buildScene();
+
+                    // Events
+                    raycaster = new THREE.Raycaster();
+                    mouse = new THREE.Vector2();
+                    window.addEventListener('resize', onResize);
+                    window.addEventListener('click', onClick);
+                    window.addEventListener('mousemove', onMouseMove);
+
+                    // Remove Loader
+                    setTimeout(() => {
+                        const loader = document.getElementById('loader');
+                        if (loader) {
+                            loader.style.opacity = 0;
+                            setTimeout(() => loader.remove(), 800);
+                        }
+                    }, 1000);
+
+                    animate();
+                };
+
+                const buildScene = () => {
+                    const floorGroup = new THREE.Group();
+                    scene.add(floorGroup);
+
+                    // 1. Main Corridor Floor (Long strip)
+                    // Total width approx 130, depth approx 40
+                    const baseGeo = new THREE.BoxGeometry(140, 0.5, 40);
+                    const baseMat = new THREE.MeshLambertMaterial({ color: 0x0a1420 });
+                    const baseFloor = new THREE.Mesh(baseGeo, baseMat);
+                    baseFloor.position.y = -0.5;
+                    baseFloor.receiveShadow = true;
+                    floorGroup.add(baseFloor);
+
+                    // Grid on top of floor
+                    const grid = new THREE.GridHelper(140, 28, 0x1a2b3c, 0x0a1420);
+                    grid.scale.z = 40/140; // Squash grid to match floor aspect
+                    grid.position.y = 0.01;
+                    floorGroup.add(grid);
+
+                    // 2. Central Corridor Marking
+                    const corrGeo = new THREE.PlaneGeometry(140, 6);
+                    const corrMat = new THREE.MeshBasicMaterial({ color: 0x00f2fe, transparent: true, opacity: 0.1 });
+                    const corridorMark = new THREE.Mesh(corrGeo, corrMat);
+                    corridorMark.rotation.x = -Math.PI/2;
+                    corridorMark.position.y = 0.02;
+                    floorGroup.add(corridorMark);
+
+                    // 3. Rooms
+                    rooms.value.forEach(data => {
+                        const roomGroup = new THREE.Group();
+                        roomGroup.position.set(data.x, 0, data.z);
+
+                        // Floor
+                        const floorHeight = 0.2;
+                        const floorGeo = new THREE.BoxGeometry(data.w, floorHeight, data.d);
+                        
+                        let floorColor = 0x228833; // Default Green
+                        if (data.status === 'occupied') floorColor = 0xaa3333; // Red
+                        if (data.status === 'active') floorColor = 0xaa8800; // Yellow
+                        if (data.type === 'Utility') floorColor = 0x223344; // Dark Blue
+
+                        const floorMat = new THREE.MeshLambertMaterial({ 
+                            color: floorColor,
+                            transparent: true, 
+                            opacity: 0.7,
+                            emissive: floorColor,
+                            emissiveIntensity: 0.3
+                        });
+                        const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+                        floorMesh.position.y = floorHeight / 2;
+                        floorMesh.userData = { isRoom: true, id: data.id, originalColor: floorColor };
+                        roomGroup.add(floorMesh);
+                        interactiveObjects.push(floorMesh);
+
+                        // Walls (Edges)
+                        const wallHeight = 3.5;
+                        const wallGeo = new THREE.BoxGeometry(data.w, wallHeight, data.d);
+                        const edges = new THREE.EdgesGeometry(wallGeo);
+                        const lineMat = new THREE.LineBasicMaterial({ color: 0x00f2fe, transparent: true, opacity: 0.2 });
+                        const walls = new THREE.LineSegments(edges, lineMat);
+                        walls.position.y = wallHeight / 2;
+                        roomGroup.add(walls);
+
+                        // Angled Balcony (Visual flair based on image)
+                        if (data.type !== 'Utility') {
+                             const balcGeo = new THREE.BoxGeometry(data.w, 0.5, 2);
+                             const balcMat = new THREE.MeshBasicMaterial({ color: 0x00f2fe, transparent: true, opacity: 0.1 });
+                             const balc = new THREE.Mesh(balcGeo, balcMat);
+                             // Position balcony outside relative to Z center (0)
+                             // If z is negative (Top row), balcony is at -Z. If positive (Bottom row), balcony at +Z
+                             const zOffset = data.z < 0 ? -(data.d/2 + 1) : (data.d/2 + 1);
+                             balc.position.set(0, 0, zOffset); 
+                             // Local position is relative to room center
+                             // But roomGroup is already at data.z. 
+                             // Correct: Local Z offset inside the group
+                             floorMesh.add(balc); // Add to floorMesh to move with it easily
+                        }
+
+                        // Label
+                        const div = document.createElement('div');
+                        div.className = 'room-label';
+                        div.innerHTML = `<div>${data.name}</div>`;
+                        const label = new CSS2DObject(div);
+                        label.position.set(0, wallHeight + 1.5, 0);
+                        roomGroup.add(label);
+
+                        // Store ref
+                        data.sceneObject = roomGroup;
+                        data.floorMesh = floorMesh;
+
+                        floorGroup.add(roomGroup);
+                    });
+
+                    // 4. Scanner
+                    const scGeo = new THREE.BoxGeometry(2, 6, 60);
+                    const scMat = new THREE.MeshBasicMaterial({ 
+                        color: 0x00f2fe, 
+                        transparent: true, 
+                        opacity: 0.1, 
+                        blending: THREE.AdditiveBlending,
+                        depthWrite: false
+                    });
+                    scanBeam = new THREE.Mesh(scGeo, scMat);
+                    scanBeam.position.set(-60, 3, 0);
+                    scene.add(scanBeam);
+                };
+
+                const onMouseMove = (event) => {
+                    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+                    mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+                    
+                    raycaster.setFromCamera(mouse, camera);
+                    const intersects = raycaster.intersectObjects(interactiveObjects);
+                    
+                    document.body.style.cursor = intersects.length > 0 ? 'pointer' : 'default';
+                    
+                    // Simple hover glow
+                    interactiveObjects.forEach(obj => {
+                        if (currentRoom.value?.id !== obj.userData.id) {
+                            obj.material.emissiveIntensity = 0.3;
+                        }
+                    });
+                    
+                    if (intersects.length > 0) {
+                        const obj = intersects[0].object;
+                        if (currentRoom.value?.id !== obj.userData.id) {
+                             obj.material.emissiveIntensity = 0.6;
+                        }
+                    }
+                };
+
+                const onClick = (event) => {
+                    if (event.target.closest('.glass-panel') || event.target.closest('header') || event.target.closest('footer')) return;
+                    
+                    raycaster.setFromCamera(mouse, camera);
+                    const intersects = raycaster.intersectObjects(interactiveObjects);
+                    
+                    if (intersects.length > 0) {
+                        const roomId = intersects[0].object.userData.id;
+                        const room = rooms.value.find(r => r.id === roomId);
+                        selectRoom(room);
+                    } else {
+                        closeRoomPanel();
+                    }
+                };
+
+                const selectRoom = (room) => {
+                    if (!room) return;
+                    currentRoom.value = room;
+                    
+                    // Reset all
+                    interactiveObjects.forEach(obj => {
+                        obj.material.emissive.setHex(obj.userData.originalColor);
+                        obj.material.emissiveIntensity = 0.3;
+                        obj.material.opacity = 0.7;
+                    });
+
+                    // Highlight selected
+                    if (room.floorMesh) {
+                        room.floorMesh.material.emissive.setHex(0xffaa00);
+                        room.floorMesh.material.emissiveIntensity = 0.8;
+                        room.floorMesh.material.opacity = 1.0;
+                    }
+
+                    // Move Camera
+                    const targetX = room.x;
+                    const targetZ = room.z;
+                    // Zoom in from an angle
+                    const camX = targetX + 10;
+                    const camZ = targetZ + (targetZ > 0 ? 20 : -20); // Adjust side based on row
+
+                    new TWEEN.Tween(camera.position).to({ x: camX, y: 30, z: camZ }, 1000).easing(TWEEN.Easing.Cubic.Out).start();
+                    new TWEEN.Tween(controls.target).to({ x: targetX, y: 0, z: targetZ }, 1000).easing(TWEEN.Easing.Cubic.Out).start();
+                };
+
+                const closeRoomPanel = () => {
+                    currentRoom.value = null;
+                    interactiveObjects.forEach(obj => {
+                        obj.material.emissive.setHex(obj.userData.originalColor);
+                        obj.material.emissiveIntensity = 0.3;
+                        obj.material.opacity = 0.7;
+                    });
+                };
+
+                const resetView = () => {
+                    closeRoomPanel();
+                    new TWEEN.Tween(camera.position).to({ x: 0, y: 90, z: 80 }, 1500).easing(TWEEN.Easing.Quadratic.InOut).start();
+                    new TWEEN.Tween(controls.target).to({ x: 0, y: 0, z: 0 }, 1500).easing(TWEEN.Easing.Quadratic.InOut).start();
+                };
+
+                const toggleDevice = (device) => {
+                    if (!currentRoom.value) return;
+                    currentRoom.value.devices[device] = !currentRoom.value.devices[device];
+                    // Add logic to visualize device change if needed
+                };
+
+                const toggleRotation = () => {
+                    autoRotate.value = !autoRotate.value;
+                    if(controls) controls.autoRotate = autoRotate.value;
+                };
+
+                const onResize = () => {
+                    camera.aspect = window.innerWidth / window.innerHeight;
+                    camera.updateProjectionMatrix();
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                    composer.setSize(window.innerWidth, window.innerHeight);
+                    labelRenderer.setSize(window.innerWidth, window.innerHeight);
+                };
+
+                const animate = (time) => {
+                    requestAnimationFrame(animate);
+                    TWEEN.update(time);
+                    controls.update();
+
+                    // Scan beam animation
+                    if(scanBeam) {
+                        scanBeam.position.x += 0.4;
+                        if(scanBeam.position.x > 70) scanBeam.position.x = -70;
+                    }
+
+                    composer.render();
+                    labelRenderer.render(scene, camera);
+                };
+
+                onMounted(() => {
+                    initThree();
+                });
+
+                return {
+                    currentTime,
+                    rooms,
+                    currentRoom,
+                    selectRoom,
+                    closeRoomPanel,
+                    resetView,
+                    toggleDevice,
+                    getRoomTypeLabel,
+                    toggleRotation,
+                    autoRotate
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
